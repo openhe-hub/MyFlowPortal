@@ -59,13 +59,13 @@ bash run-flow-portal-xx.sh
 | `video_name` | A unique name for the experiment and output directory |
 | `prompt_src` | Prompt describing the source video's content |
 | `prompt_tar` | Prompt describing target lighting and background |
-| `height`, `width` | Output resolution; result will be center-cropped |
+| `height`, `width` | Output resolution; result will be center-cropped; support multiples of 16 only |
 | `fps` | Output frames per second |
-| `k_frames` | Number of frames sampled from the input (supports 49 only) |
+| `k_frames` | Number of frames sampled from the input; supports 49 only |
 | `partial_edit` | **true**: relight only foreground & generate new background; **false**: full-frame editing |
 | `do_preprocess` | Required for first run only; set to false for repeated runs using the same video |
 | `provided_bg`, `provided_bg_path` | Use a fixed background image instead of generating one |
-| `transfer_blurring` | Controls detail vs. lighting balance (**high** preserves more detail**) |
+| `transfer_blurring` | Controls detail vs. lighting balance (**high** preserves more detail, **low** yield better lighting realism, **mid** is balanced and recommended) |
 
 ### Dependency Path Configuration
 
