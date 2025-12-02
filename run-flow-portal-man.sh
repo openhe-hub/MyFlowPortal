@@ -21,7 +21,7 @@ provided_bg=false # true | false
 # whether to provide a specific background image for generating, if false, will generate background from text prompt only.
 provided_bg_path=""
 # if provided_bg is true, please provide the path to the background image here.
-transfer_blurring="high" # low | mid | high
+transfer_blurring="mid" # low | mid | high
 # Forced detail control. high for more detail preserving but less lighting quality. vice versa.
 
 if [ "$partial_edit" = true ]; then
