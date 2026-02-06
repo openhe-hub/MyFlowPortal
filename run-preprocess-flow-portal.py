@@ -1,5 +1,4 @@
 import os
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1" # 选择显卡使用, set in .sh/
 import sys
 
@@ -86,8 +85,13 @@ if total_frames < args.k_frames:
 
 print(f"Original video size: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}, FPS: {orig_fps}, Total frames: {total_frames}")
 
-# 取前面k帧的索引
-frame_indices = np.arange(args.k_frames)
+# 按目标fps均匀采样，覆盖整个视频时长
+sample_interval = orig_fps / args.fps  # e.g. 29.97/8 ≈ 3.75
+max_sampled = int(total_frames / sample_interval)  # how many frames at target fps
+n_sample = min(args.k_frames, max_sampled)
+frame_indices = np.round(np.arange(n_sample) * sample_interval).astype(int)
+frame_indices = np.clip(frame_indices, 0, total_frames - 1)
+print(f"Sampling {n_sample} frames at {args.fps}fps (interval={sample_interval:.1f}), covering {n_sample/args.fps:.2f}s of {total_frames/orig_fps:.2f}s video")
 
 frames = []
 for idx, frame_idx in enumerate(frame_indices):
@@ -213,16 +217,17 @@ print("Applying Canny edge detection to video frames...")
 from controlnet_aux import CannyDetector, HEDdetector, MidasDetector
 
 control = "combined"  # "Canny", "HED", "depth", "combined"
+_annotators_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models", "Annotators")
 if control == "HED":
-    canny = HEDdetector.from_pretrained("lllyasviel/Annotators")
+    canny = HEDdetector.from_pretrained(_annotators_path)
 elif control == "Canny":
     canny = CannyDetector()
 elif control == "depth":
-    canny = MidasDetector.from_pretrained("lllyasviel/Annotators")
+    canny = MidasDetector.from_pretrained(_annotators_path)
 elif control == "combined":
     canny = CannyDetector()
-    canny_depth = MidasDetector.from_pretrained("lllyasviel/Annotators")
-    canny_hed = HEDdetector.from_pretrained("lllyasviel/Annotators")
+    canny_depth = MidasDetector.from_pretrained(_annotators_path)
+    canny_hed = HEDdetector.from_pretrained(_annotators_path)
 
 def apply_canny_to_folder(input_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
@@ -274,6 +279,8 @@ for i in range(k_frames):
 
     frame = cv2.imread(frame_path, cv2.IMREAD_GRAYSCALE).astype(np.int32)
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE).astype(np.int32)
+    if mask.shape != frame.shape:
+        mask = cv2.resize(mask.astype(np.uint8), (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST).astype(np.int32)
 
     masked_canny = (frame * mask / 255).astype(np.uint8)
     cv2.imwrite(out_path, masked_canny)
