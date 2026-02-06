@@ -1,9 +1,8 @@
-export HF_ENDPOINT=https://hf-mirror.com
 export CUDA_VISIBLE_DEVICES=0
 
 echo "Cuda visible device: $CUDA_VISIBLE_DEVICES"
 
-video_input="/mnt/netdisk2/gaows/VideoX-Fun-gws-edit/datasets/man.mp4"
+video_input="./datasets/man.mp4"
 video_name="man_ic_bg"
 prompt_src="a man is talking in a room"
 prompt_tar="a man in front of eiffle tower with golden sunlight."
@@ -19,7 +18,7 @@ do_preprocess=true # true | false
 # do preprocess for the first time only, set to false for repeated runs to save time.
 provided_bg=true # true | false
 # whether to provide a specific background image for generating, if false, will generate background from text prompt only.
-provided_bg_path="/mnt/netdisk2/gaows/VideoX-Fun-gws-edit/datasets/tower.png"
+provided_bg_path="./datasets/tower.png"
 # if provided_bg is true, please provide the path to the background image here.
 transfer_blurring="mid" # low | mid | high
 # Forced detail control. high for more detail preserving but less lighting quality. vice versa.
@@ -54,11 +53,11 @@ if [ "$do_preprocess" = true ]; then
         --width ${width} \
         --fps ${fps} \
         --batch_size 7
-    python /mnt/netdisk2/gaows/MatAnyone/inference_matanyone.py \
+    python ./pretrained_models/MatAnyone/inference_matanyone.py \
         -i ./datasets/${video_name}/${video_name}.mp4 \
         -o ./datasets/${video_name}/matanyone \
         -m ./datasets/${video_name}/masks/mask_0000.png \
-        -c /mnt/netdisk2/gaows/MatAnyone/pretrained_models/matanyone.pth
+        -c ./pretrained_models/MatAnyone/pretrained_models/matanyone.pth
     python run-preprocess-flow-portal.py \
         --video_input ${video_input} \
         --video_name ${video_name} \
@@ -74,7 +73,7 @@ fi
 
 if [ "$provided_bg" = true ]; then
     python run-iclight-fbc.py \
-        --model_path "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/IC-Light/models/iclight_sd15_fbc.safetensors" \
+        --model_path "./pretrained_models/IC-Light/models/iclight_sd15_fbc.safetensors" \
         --base_path ${PWD} \
         --bg_path ${provided_bg_path} \
         --video_name ${video_name} \
@@ -86,7 +85,7 @@ if [ "$provided_bg" = true ]; then
         ${partial_edit_flag}
 else
     python run-iclight-fc.py \
-        --model_path "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/IC-Light/models/iclight_sd15_fc.safetensors" \
+        --model_path "./pretrained_models/IC-Light/models/iclight_sd15_fc.safetensors" \
         --base_path ${PWD} \
         --video_name ${video_name} \
         --prompt "${prompt_tar}" \
@@ -121,6 +120,6 @@ python run-flow-portal.py \
     --accuracy 16 \
     --src_blurring 0.5 \
     --transfer_blurring ${transfer_blurring} \
-    --model_name "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control"
+    --model_name "./pretrained_models/models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control"
 echo "Flow portal completed."
 echo "--------------------------------------"

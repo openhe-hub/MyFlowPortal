@@ -1,9 +1,8 @@
-export HF_ENDPOINT=https://hf-mirror.com
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 echo "Cuda visible device: $CUDA_VISIBLE_DEVICES"
 
-video_input="/mnt/netdisk2/gaows/VideoX-Fun-gws-edit/datasets/tt3.mp4"
+video_input="./datasets/tt3.mp4"
 video_name="tt3_ic"
 prompt_src="a woman is dancing"
 prompt_tar="a woman is dancing in a beautiful garden with flowers with sunlight"
@@ -54,11 +53,11 @@ if [ "$do_preprocess" = true ]; then
         --width ${width} \
         --fps ${fps} \
         --batch_size 7
-    python /mnt/netdisk2/gaows/MatAnyone/inference_matanyone.py \
+    python ./pretrained_models/MatAnyone/inference_matanyone.py \
         -i ./datasets/${video_name}/${video_name}.mp4 \
         -o ./datasets/${video_name}/matanyone \
         -m ./datasets/${video_name}/masks/mask_0000.png \
-        -c /mnt/netdisk2/gaows/MatAnyone/pretrained_models/matanyone.pth
+        -c ./pretrained_models/MatAnyone/pretrained_models/matanyone.pth
     python run-preprocess-flow-portal.py \
         --video_input ${video_input} \
         --video_name ${video_name} \
@@ -74,7 +73,7 @@ fi
 
 if [ "$provided_bg" = true ]; then
     python run-iclight-fbc.py \
-        --model_path "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/IC-Light/models/iclight_sd15_fbc.safetensors" \
+        --model_path "./pretrained_models/IC-Light/models/iclight_sd15_fbc.safetensors" \
         --base_path ${PWD} \
         --bg_path ${provided_bg_path} \
         --video_name ${video_name} \
@@ -86,7 +85,7 @@ if [ "$provided_bg" = true ]; then
         ${partial_edit_flag}
 else
     python run-iclight-fc.py \
-        --model_path "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/IC-Light/models/iclight_sd15_fc.safetensors" \
+        --model_path "./pretrained_models/IC-Light/models/iclight_sd15_fc.safetensors" \
         --base_path ${PWD} \
         --video_name ${video_name} \
         --prompt "${prompt_tar}" \
@@ -121,6 +120,6 @@ python run-flow-portal.py \
     --accuracy 16 \
     --src_blurring 0.5 \
     --transfer_blurring ${transfer_blurring} \
-    --model_name "/mnt/netdisk2/gaows/VideoX-Fun-pretrained/models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control"
+    --model_name "./pretrained_models/models/Diffusion_Transformer/Wan2.1-Fun-V1.1-1.3B-Control"
 echo "Flow portal completed."
 echo "--------------------------------------"
