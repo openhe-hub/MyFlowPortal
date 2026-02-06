@@ -1,0 +1,14 @@
+# Data and models
+datasets/
+pretrained_models/
+results/
+
+# Temporary upload directories
+upload_v3/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE / tool config
+.claude/
