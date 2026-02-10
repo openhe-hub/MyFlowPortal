@@ -206,6 +206,74 @@ The FlowPortal pipeline runs 5 stages:
 | `partial_edit` | Preserve foreground, replace background only | true |
 | `gpu_memory_mode` | VRAM management | no_offload (A100) |
 
+## Phoenix-2014-T Batch Processing
+
+### Dataset
+
+Phoenix-2014-T sign language dataset (7096 train videos) is available on Jubail:
+
+```
+/scratch/zl6890/Workspace/zhewen/FlowPortal/datasets/PHOENIX-2014-T/train_mp4/
+```
+
+- Original frames (210x260 PNG) were converted to MP4 at 25fps using ffmpeg
+- Local symlink: `datasets/PHOENIX-2014-T -> /home/nyuair/junyi/SLRT/PHOENIX-2014-T-release-v3/PHOENIX-2014-T`
+
+### Manifest & Prompts
+
+The batch job uses a manifest CSV (`scripts/phoenix_manifest.csv`) with 7039 valid videos (57 skipped as too short). Each video is assigned:
+
+- **Dynamic k_frames** based on frame count: 41 (2531), 21 (3507), 13 (756), 9 (245)
+- **Random prompt** from 10 target backgrounds (see `scripts/phoenix_prompts.txt`)
+
+| Prompt ID | Scene |
+|-----------|-------|
+| 0 | Modern office |
+| 1 | Library |
+| 2 | City street |
+| 3 | Green park |
+| 4 | Cozy cafe |
+| 5 | Classroom |
+| 6 | Living room |
+| 7 | Beach |
+| 8 | Night cityscape |
+| 9 | Garden |
+
+Source prompt (shared): `a person in dark clothing is signing in front of a plain gray background in a TV studio`
+
+### Running the Batch Job
+
+```bash
+# Submit 4-GPU array job (must use A100 nodes, V100 doesn't support bfloat16)
+ssh chatsign@10.224.35.17 "ssh jubail 'export PATH=/opt/slurm/20.11.4-13/bin:\$PATH && \
+  cd /scratch/zl6890/Workspace/zhewen/FlowPortal && \
+  sbatch --constraint=a100 run-phoenix-batch-slurm.sh'"
+```
+
+- **SLURM array**: `--array=0-3`, each task processes ~1760 videos from its chunk
+- **Time limit**: 96 hours
+- **Resume support**: Completed videos (with `output_video.mp4`) are automatically skipped
+- **Disk cleanup**: Intermediate files are removed after each video
+
+### Monitoring Progress
+
+```bash
+# Video counts per chunk
+ssh chatsign@10.224.35.17 "ssh jubail 'wc -l /scratch/zl6890/Workspace/zhewen/FlowPortal/logs/phoenix_progress_*.log'"
+
+# Check failures
+ssh chatsign@10.224.35.17 "ssh jubail 'grep FAILED /scratch/zl6890/Workspace/zhewen/FlowPortal/logs/phoenix_progress_*.log'"
+
+# Job status
+ssh chatsign@10.224.35.17 "ssh jubail 'export PATH=/opt/slurm/20.11.4-13/bin:\$PATH && squeue -u zl6890'"
+```
+
+### Important Notes
+
+- **Must use A100 nodes** (`--constraint=a100`): V100 (dn* nodes) does not support bfloat16, causing FlowPortal to fail
+- **Output**: `results/flow-edit-{video_name}/output_video.mp4` and `compare_output_video.mp4`
+- **Estimated time**: ~77 hours total with 4x A100 (~2 min/video on A100-80G, ~4 min on A100-40G)
+
 ## Troubleshooting
 
 ### sbatch not found
@@ -222,6 +290,12 @@ export HF_HOME=/scratch/zl6890/.cache/huggingface
 ### Missing kornia
 ```bash
 /scratch/zl6890/miniconda/envs/flowportal/bin/pip install kornia
+```
+
+### bfloat16 not supported (V100 nodes)
+V100 GPUs (dn* nodes) do not support bfloat16. Always add `--constraint=a100` when submitting jobs:
+```bash
+sbatch --constraint=a100 run-phoenix-batch-slurm.sh
 ```
 
 ### Token auth errors for HF upload
