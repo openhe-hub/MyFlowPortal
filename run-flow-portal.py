@@ -65,6 +65,12 @@ def parse_arg():
     parser.add_argument("--accuracy", type=int, default=16, choices=[16, 32], help="Model accuracy, 16 for torch.bfloat16, 32 for torch.float32")
     parser.add_argument("--src_blurring", type=float, default=0.0, help="Blurring for source side generation, good for detail")
     parser.add_argument("--transfer_blurring", type=float, default=0.0, help="Blurring for transfer delta, good for detail")
+    parser.add_argument("--num_inference_steps", type=int, default=50, help="Number of diffusion steps")
+    parser.add_argument("--sampler_name", type=str, default="Flow", choices=["Flow", "Flow_Unipc", "Flow_DPM++"], help="Sampler to use")
+    parser.add_argument("--enable_teacache", type=lambda x: x.lower() == 'true', default=False, help="Enable TeaCache for faster inference")
+    parser.add_argument("--teacache_threshold", type=float, default=0.10, help="TeaCache threshold (0.05-0.10 for 1.3B)")
+    parser.add_argument("--compile_dit", action='store_true', help="Enable torch.compile for transformer blocks")
+    parser.add_argument("--cfg_skip_ratio", type=float, default=0.0, help="Skip CFG for first N%% of steps (0.0-0.25)")
     return parser.parse_args()
 args = parse_arg()
 
@@ -107,29 +113,29 @@ ring_degree         = 1 # 多卡运行（ 需要满足 ulysses_degree * ring_deg
 # Use FSDP to save more GPU memory in multi gpus.
 fsdp_dit            = False
 fsdp_text_encoder   = True
-# Compile will give a speedup in fixed resolution and need a little GPU memory. 
+# Compile will give a speedup in fixed resolution and need a little GPU memory.
 # The compile_dit is not compatible with the fsdp_dit and sequential_cpu_offload.
-compile_dit         = False
+compile_dit         = args.compile_dit
 
 # Support TeaCache.
-enable_teacache     = False
-# Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process, 
+enable_teacache     = args.enable_teacache
+# Recommended to be set between 0.05 and 0.30. A larger threshold can cache more steps, speeding up the inference process,
 # but it may cause slight differences between the generated content and the original content.
 # # --------------------------------------------------------------------------------------------------- #
 # | Model Name          | threshold | Model Name          | threshold | Model Name          | threshold |
 # | Wan2.1-T2V-1.3B     | 0.05~0.10 | Wan2.1-T2V-14B      | 0.10~0.15 | Wan2.1-I2V-14B-720P | 0.20~0.30 |
 # | Wan2.1-I2V-14B-480P | 0.20~0.25 | Wan2.1-Fun-*-1.3B-* | 0.05~0.10 | Wan2.1-Fun-*-14B-*  | 0.20~0.30 |
 # # --------------------------------------------------------------------------------------------------- #
-teacache_threshold  = 0.10
+teacache_threshold  = args.teacache_threshold
 # The number of steps to skip TeaCache at the beginning of the inference process, which can
 # reduce the impact of TeaCache on generated video quality.
-num_skip_start_steps = 5
+num_skip_start_steps = 2
 # Whether to offload TeaCache tensors to cpu to save a little bit of GPU memory.
 teacache_offload    = False
 
 # Skip some cfg steps in inference for acceleration
 # Recommended to be set between 0.00 and 0.25
-cfg_skip_ratio      = 0
+cfg_skip_ratio      = args.cfg_skip_ratio
 
 # Riflex config
 enable_riflex       = False
@@ -143,7 +149,7 @@ config_path         = "config/wan2.1/wan_civitai.yaml"
 model_name          = args.model_name
 
 # Choose the sampler in "Flow", "Flow_Unipc", "Flow_DPM++"
-sampler_name        = "Flow"
+sampler_name        = args.sampler_name
 # [NOTE]: Noise schedule shift parameter. Affects temporal dynamics. 
 # Used when the sampler is in "Flow_Unipc", "Flow_DPM++".
 # If you want to generate a 480p video, it is recommended to set the shift value to 3.0.
@@ -170,7 +176,7 @@ start_image             = None
 # negative_prompt         = "Twisted body, limb deformities, text captions, comic, static, ugly, error, messy code."
 guidance_scale          = 6.0
 seed                    = args.seed
-num_inference_steps     = 50
+num_inference_steps     = args.num_inference_steps
 
 device = set_multi_gpus_devices(ulysses_degree, ring_degree)
 config = OmegaConf.load(config_path)
@@ -208,9 +214,23 @@ clip_image_encoder = CLIPModel.from_pretrained(
 clip_image_encoder = clip_image_encoder.eval()
 
 # Get Scheduler
-scheduler = FlowMatchEulerDiscreteScheduler(
-    **filter_kwargs(FlowMatchEulerDiscreteScheduler, OmegaConf.to_container(config['scheduler_kwargs']))
-)
+scheduler_kwargs = OmegaConf.to_container(config['scheduler_kwargs'])
+if sampler_name == "Flow_DPM++":
+    scheduler_kwargs['shift'] = shift
+    scheduler = FlowDPMSolverMultistepScheduler(
+        **filter_kwargs(FlowDPMSolverMultistepScheduler, scheduler_kwargs),
+    )
+    print(f"Using FlowDPMSolverMultistepScheduler with shift={shift}")
+elif sampler_name == "Flow_Unipc":
+    scheduler_kwargs['shift'] = shift
+    scheduler = FlowUniPCMultistepScheduler(
+        **filter_kwargs(FlowUniPCMultistepScheduler, scheduler_kwargs),
+    )
+    print(f"Using FlowUniPCMultistepScheduler with shift={shift}")
+else:
+    scheduler = FlowMatchEulerDiscreteScheduler(
+        **filter_kwargs(FlowMatchEulerDiscreteScheduler, scheduler_kwargs)
+    )
 
 # Get Pipeline
 pipeline = WanFunControlPipeline(
@@ -239,6 +259,15 @@ elif GPU_memory_mode == "model_full_load_and_qfloat8":
 else:
     pipeline.to(device=device) # 完全不优化，22g显存占用，1min 50step
 
+if compile_dit:
+    try:
+        print("Compiling transformer blocks with torch.compile (inductor)...")
+        for i, block in enumerate(transformer.blocks):
+            transformer.blocks[i] = torch.compile(block, backend="inductor")
+        print("torch.compile applied successfully.")
+    except Exception as e:
+        print(f"torch.compile failed, continuing without compilation: {e}")
+
 coefficients = get_teacache_coefficients(model_name) if enable_teacache else None
 if coefficients is not None:
     print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
@@ -265,7 +294,10 @@ with torch.no_grad():
 
 
     control_video_input_tar, _, _, _ = get_video_to_video_latent(control_video_tar, video_length=video_length, sample_size=sample_size, fps=None, ref_image=None)
-    control_video_input_src, _, _, _ = get_video_to_video_latent(control_video_src, video_length=video_length, sample_size=sample_size, fps=None, ref_image=None)
+    if control_video_src == control_video_tar:
+        control_video_input_src = control_video_input_tar  # share tensor to skip duplicate VAE encoding
+    else:
+        control_video_input_src, _, _, _ = get_video_to_video_latent(control_video_src, video_length=video_length, sample_size=sample_size, fps=None, ref_image=None)
     control_camera_video = None
     print("control_video_input_tar shape:", control_video_input_tar.shape)
     print("control_video_input_src shape:", control_video_input_src.shape)

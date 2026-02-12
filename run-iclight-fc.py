@@ -56,6 +56,8 @@ parser.add_argument("--height", type=int, required=True, help="生成高度")
 parser.add_argument("--steps", type=int, default=50)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--partial_edit", type=bool, default=False)
+parser.add_argument("--highres_scale", type=float, default=1.5, help="Highres upscale factor (1.0 to disable)")
+parser.add_argument("--highres_denoise", type=float, default=0.5, help="Highres denoising strength")
 
 args = parser.parse_args()
 
@@ -258,6 +260,11 @@ def process(input_fg, prompt, image_width, image_height, num_samples, seed, step
         ).images.to(vae.dtype) / vae.config.scaling_factor
 
     pixels = vae.decode(latents).sample
+
+    # Skip highres refinement pass when not needed
+    if highres_denoise <= 0 or highres_scale <= 1.0:
+        return pytorch2numpy(pixels)
+
     pixels = pytorch2numpy(pixels)
     pixels = [resize_without_crop(
         image=p,
@@ -323,8 +330,8 @@ cfg           = 2.0
 image_width   = int(math.ceil(args.width / 64.0) * 64)
 image_height  = int(math.ceil(args.height / 64.0) * 64)
 lowres_denoise   = 0.9
-highres_scale    = 1.5
-highres_denoise  = 0.5
+highres_scale    = args.highres_scale
+highres_denoise  = args.highres_denoise
 a_prompt      = "highres, best quality, enhanced lighting, detailed face"
 n_prompt      = "lowres, bad anatomy, bad hands, cropped, worst quality, furry, hairy, branchy, rainy, low quality, jpeg artifacts, ugly, duplicate"
 # 这个 demo 版本用“前景条件”重打光；背景由模型生成（不指定外部背景图）

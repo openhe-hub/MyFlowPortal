@@ -15,7 +15,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from decord import VideoReader
+try:
+    from decord import VideoReader
+except ImportError:
+    VideoReader = None
 from einops import rearrange
 from func_timeout import FunctionTimedOut, func_timeout
 from packaging import version as pver

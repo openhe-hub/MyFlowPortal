@@ -8,36 +8,10 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='imageio')
 
 import numpy as np
-import torch
-from diffusers import FlowMatchEulerDiscreteScheduler
-from omegaconf import OmegaConf
 from PIL import Image
-from transformers import AutoTokenizer
 
 # current_file_path = os.path.abspath(__file__)
 current_file_path = os.path.abspath("")
-# print(current_file_path)
-project_roots = [os.path.dirname(current_file_path), os.path.dirname(os.path.dirname(current_file_path)), os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))]
-for project_root in project_roots:
-    sys.path.insert(0, project_root) if project_root not in sys.path else None
-
-from videox_fun.dist import set_multi_gpus_devices, shard_model
-from videox_fun.models import (AutoencoderKLWan, AutoTokenizer, CLIPModel,
-                               WanT5EncoderModel, WanTransformer3DModel)
-from videox_fun.data.dataset_image_video import process_pose_file
-from videox_fun.models.cache_utils import get_teacache_coefficients
-from videox_fun.pipeline import WanFunControlPipeline, WanPipeline
-from videox_fun.utils.fp8_optimization import (convert_model_weight_to_float8,
-                                               convert_weight_dtype_wrapper,
-                                               replace_parameters_by_name)
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
-from videox_fun.utils.utils import (filter_kwargs, get_image_to_video_latent, get_image_latent,
-                                    get_video_to_video_latent,
-                                    save_videos_grid)
-from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
-from videox_fun.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-
-from IPython.display import display, Image as IPyImage, Video as IPyVideo
 
 import argparse
 import imageio
@@ -52,6 +26,10 @@ def parse_arg():
     parser.add_argument("--height", type=int, required=True, help="Height of the video frames")
     parser.add_argument("--width", type=int, required=True, help="Width of the video frames")
     parser.add_argument("--using_existing_masks", type=str, default=None, help="Path to existing masks directory, if any")
+    parser.add_argument("--skip_edge_detection", action='store_true', help="Skip canny/HED/Midas computation, reuse existing video_canny/ from a prior run")
+    parser.add_argument("--skip_frame_extraction", action='store_true', help="Skip video frame extraction, reuse existing video_frames/ from a prior run")
+    parser.add_argument("--annotators_path", type=str, default=None, help="Path to Annotators directory (HED/Midas weights). Overrides default.")
+    parser.add_argument("--edge_mode", type=str, default="combined", choices=["combined", "canny", "hed", "depth"], help="Edge detection mode. 'canny' is fastest (no neural network).")
     return parser.parse_args()
 
 args = parse_arg()
@@ -70,92 +48,91 @@ import cv2
 k_frames, fps = args.k_frames, args.fps
 height, width = args.height, args.width
 
-# 检查输入视频是否存在
-if not video_input or not os.path.exists(video_input):
-    raise FileNotFoundError(f"Input video file not found: {video_input}")
+if not args.skip_frame_extraction:
+    # 检查输入视频是否存在
+    if not video_input or not os.path.exists(video_input):
+        raise FileNotFoundError(f"Input video file not found: {video_input}")
 
-os.makedirs(video_frames_dir, exist_ok=True)
-print(f"Extracting and resizing first {k_frames} frames to {width}x{height}...")
-cap = cv2.VideoCapture(video_input)
-orig_fps = cap.get(cv2.CAP_PROP_FPS)
-total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    os.makedirs(video_frames_dir, exist_ok=True)
+    print(f"Extracting and resizing first {k_frames} frames to {width}x{height}...")
+    cap = cv2.VideoCapture(video_input)
+    orig_fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-if total_frames < args.k_frames:
-    raise ValueError(f"Input video has only {total_frames} frames, but k_frames={args.k_frames} is required.")
+    if total_frames < args.k_frames:
+        raise ValueError(f"Input video has only {total_frames} frames, but k_frames={args.k_frames} is required.")
 
-print(f"Original video size: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}, FPS: {orig_fps}, Total frames: {total_frames}")
+    print(f"Original video size: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}, FPS: {orig_fps}, Total frames: {total_frames}")
 
-# 按目标fps均匀采样，覆盖整个视频时长
-sample_interval = orig_fps / args.fps  # e.g. 29.97/8 ≈ 3.75
-max_sampled = int(total_frames / sample_interval)  # how many frames at target fps
-n_sample = min(args.k_frames, max_sampled)
-frame_indices = np.round(np.arange(n_sample) * sample_interval).astype(int)
-frame_indices = np.clip(frame_indices, 0, total_frames - 1)
-print(f"Sampling {n_sample} frames at {args.fps}fps (interval={sample_interval:.1f}), covering {n_sample/args.fps:.2f}s of {total_frames/orig_fps:.2f}s video")
+    # 按目标fps均匀采样，覆盖整个视频时长
+    sample_interval = orig_fps / args.fps  # e.g. 29.97/8 ≈ 3.75
+    max_sampled = int(total_frames / sample_interval)  # how many frames at target fps
+    n_sample = min(args.k_frames, max_sampled)
+    frame_indices = np.round(np.arange(n_sample) * sample_interval).astype(int)
+    frame_indices = np.clip(frame_indices, 0, total_frames - 1)
+    print(f"Sampling {n_sample} frames at {args.fps}fps (interval={sample_interval:.1f}), covering {n_sample/args.fps:.2f}s of {total_frames/orig_fps:.2f}s video")
 
-frames = []
-for idx, frame_idx in enumerate(frame_indices):
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    if not ret:
-        raise RuntimeError(f"Failed to read frame {frame_idx} from video.")
-    # resize到目标大小
-    frame_resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-    frame_path = os.path.join(video_frames_dir, f"frame_{idx:04d}.png")
-    cv2.imwrite(frame_path, frame_resized)
-    frames.append(frame_resized)
-cap.release()
+    frames = []
+    for idx, frame_idx in enumerate(frame_indices):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if not ret:
+            raise RuntimeError(f"Failed to read frame {frame_idx} from video.")
+        # resize到目标大小
+        frame_resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        frame_path = os.path.join(video_frames_dir, f"frame_{idx:04d}.png")
+        cv2.imwrite(frame_path, frame_resized)
+        frames.append(frame_resized)
+    cap.release()
 
-# 保存采样并resize后的视频，fps为目标fps，使用 imageio 替代 cv2.VideoWriter
-if frames:
-    frames_rgb = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in frames]
-    imageio.mimsave(input_video_path, frames_rgb, fps=args.fps)
+    # 保存采样并resize后的视频，fps为目标fps，使用 imageio 替代 cv2.VideoWriter
+    if frames:
+        frames_rgb = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in frames]
+        imageio.mimsave(input_video_path, frames_rgb, fps=args.fps)
 
-print("Frame extraction and resizing completed.")
+    print("Frame extraction and resizing completed.")
+else:
+    print("Skipping frame extraction (reusing existing video_frames/)...")
 
 print(f"INPUT VIDEO INFO --frame_num: {k_frames} --fps: {fps}" )
 print(f"USING HYPERPARAMS --k_frames: {args.k_frames} --fps: {args.fps} --batch_size: {args.batch_size}")
 
 batch_size = args.batch_size
 
-# display(IPyImage(first_frame_path)) # in .ipynb
-
 if not os.path.exists(masks_path):
     os.makedirs(masks_path)
-from transformers import AutoModelForImageSegmentation
-rmbg = AutoModelForImageSegmentation.from_pretrained('zhengpeng7/BiRefNet', trust_remote_code=True)
-
-rmbg.eval()
-device = torch.device('cuda')
-rmbg = rmbg.to(device=device, dtype=torch.float32)
 
 def resize_without_crop(image, target_width, target_height):
     pil_image = Image.fromarray(image)
     resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
     return np.array(resized_image)
 
-@torch.inference_mode()
-def run_rmbg(imgs):
-    H, W, C = imgs[0].shape
-    assert C == 3
-    feeds = []
-    for img in imgs:
-        assert img.shape == (H, W, C)
-        k = (256.0 / float(H * W)) ** 0.5
-        feed = resize_without_crop(img, int(64 * round(W // 64 / 2)), int(64 * round(H // 64 / 2)))
-        feeds.append(feed)
-    feedh = torch.from_numpy(np.stack(feeds, axis=0)).float() / 255.0
-    #print(feedh.shape)
-    feedh = feedh.movedim(-1, 1).to(device=device, dtype=torch.float32)
-    #print(feedh.shape)
-    with torch.no_grad():
-        alpha = rmbg(feedh)[-1].sigmoid()
-        #print(alpha.shape)
-    alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
-    alpha = alpha.movedim(1, -1)
-    alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
-    #print(alpha.shape)
-    return alpha
+if args.using_existing_masks is None:
+    import torch
+    device = torch.device('cuda')
+    from transformers import AutoModelForImageSegmentation
+    rmbg = AutoModelForImageSegmentation.from_pretrained('zhengpeng7/BiRefNet', trust_remote_code=True)
+    rmbg.eval()
+    rmbg = rmbg.to(device=device, dtype=torch.float32)
+
+    @torch.inference_mode()
+    def run_rmbg(imgs):
+        H, W, C = imgs[0].shape
+        assert C == 3
+        feeds = []
+        for img in imgs:
+            assert img.shape == (H, W, C)
+            k = (256.0 / float(H * W)) ** 0.5
+            feed = resize_without_crop(img, int(64 * round(W // 64 / 2)), int(64 * round(H // 64 / 2)))
+            feeds.append(feed)
+        feedh = torch.from_numpy(np.stack(feeds, axis=0)).float() / 255.0
+        feedh = feedh.movedim(-1, 1).to(device=device, dtype=torch.float32)
+        with torch.no_grad():
+            alpha = rmbg(feedh)[-1].sigmoid()
+        alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
+        alpha = alpha.movedim(1, -1)
+        alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
+        return alpha
 
 print("Generating masks for video frames...")
 
@@ -212,61 +189,67 @@ else:
     imageio.mimsave(mask_video_path, mask_frame_list, fps=fps)
 
 print("Mask generation completed.")
-print("Applying Canny edge detection to video frames...")
 
-from controlnet_aux import CannyDetector, HEDdetector, MidasDetector
+if not args.skip_edge_detection:
+    print(f"Applying edge detection (mode={args.edge_mode}) to video frames...")
 
-control = "combined"  # "Canny", "HED", "depth", "combined"
-_annotators_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models", "Annotators")
-if control == "HED":
-    canny = HEDdetector.from_pretrained(_annotators_path)
-elif control == "Canny":
-    canny = CannyDetector()
-elif control == "depth":
-    canny = MidasDetector.from_pretrained(_annotators_path)
-elif control == "combined":
-    canny = CannyDetector()
-    canny_depth = MidasDetector.from_pretrained(_annotators_path)
-    canny_hed = HEDdetector.from_pretrained(_annotators_path)
+    control = args.edge_mode  # "canny", "hed", "depth", "combined"
+    _annotators_path = args.annotators_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models", "Annotators")
+    if control == "canny":
+        from controlnet_aux import CannyDetector
+        canny = CannyDetector()
+    elif control == "hed":
+        from controlnet_aux import HEDdetector
+        canny = HEDdetector.from_pretrained(_annotators_path)
+    elif control == "depth":
+        from controlnet_aux import MidasDetector
+        canny = MidasDetector.from_pretrained(_annotators_path)
+    elif control == "combined":
+        from controlnet_aux import CannyDetector, HEDdetector, MidasDetector
+        canny = CannyDetector()
+        canny_depth = MidasDetector.from_pretrained(_annotators_path)
+        canny_hed = HEDdetector.from_pretrained(_annotators_path)
 
-def apply_canny_to_folder(input_dir, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    frame_list = []
-    f_count = 0
-    for fname in sorted(os.listdir(input_dir)):
-        if f_count >= k_frames:
-            break
-        f_count += 1
-        if not fname.endswith(".png"):
-            continue
-        img = cv2.imread(os.path.join(input_dir, fname))
-        H, W = img.shape[0], img.shape[1]
-        if control == "HED":
-            result = canny(img)
-            result = np.array(result)
-        elif control == "Canny":
-            result = canny(img, low_threshold=50, high_threshold=100)
-        elif control == "depth":
-            result = canny(img)
-            result = np.array(result)
-        elif control == "combined":
-            canny_result = canny(img, low_threshold=50, high_threshold=100)
-            hed_result = canny_hed(img)
-            depth_result = canny_depth(img)
-            canny_result = np.array(canny_result)
-            hed_result = np.array(hed_result)
-            depth_result = np.array(depth_result)
-            result = canny_result * 0.1 + hed_result * 0.1 + depth_result * 0.8
-            result = np.clip(result, 0, 255).astype(np.uint8)
-        result = resize_without_crop(result, W, H)
-        cv2.imwrite(os.path.join(output_dir, fname), result)
-        frame_list.append(result)
+    def apply_canny_to_folder(input_dir, output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        frame_list = []
+        f_count = 0
+        for fname in sorted(os.listdir(input_dir)):
+            if f_count >= k_frames:
+                break
+            f_count += 1
+            if not fname.endswith(".png"):
+                continue
+            img = cv2.imread(os.path.join(input_dir, fname))
+            H, W = img.shape[0], img.shape[1]
+            if control == "hed":
+                result = canny(img)
+                result = np.array(result)
+            elif control == "canny":
+                result = canny(img, low_threshold=50, high_threshold=100)
+            elif control == "depth":
+                result = canny(img)
+                result = np.array(result)
+            elif control == "combined":
+                canny_result = canny(img, low_threshold=50, high_threshold=100)
+                hed_result = canny_hed(img)
+                depth_result = canny_depth(img)
+                canny_result = np.array(canny_result)
+                hed_result = np.array(hed_result)
+                depth_result = np.array(depth_result)
+                result = canny_result * 0.1 + hed_result * 0.1 + depth_result * 0.8
+                result = np.clip(result, 0, 255).astype(np.uint8)
+            result = resize_without_crop(result, W, H)
+            cv2.imwrite(os.path.join(output_dir, fname), result)
+            frame_list.append(result)
 
-    # 生成视频，使用 imageio 替代 cv2.VideoWriter
-    video_path = os.path.join(output_dir, "canny_video.mp4")
-    imageio.mimsave(video_path, frame_list, fps=fps)
+        # 生成视频，使用 imageio 替代 cv2.VideoWriter
+        video_path = os.path.join(output_dir, "canny_video.mp4")
+        imageio.mimsave(video_path, frame_list, fps=fps)
 
-apply_canny_to_folder(video_frames_dir, video_canny_dir)
+    apply_canny_to_folder(video_frames_dir, video_canny_dir)
+else:
+    print("Skipping edge detection (reusing existing video_canny/)...")
 
 os.makedirs(masked_canny_dir, exist_ok=True)
 

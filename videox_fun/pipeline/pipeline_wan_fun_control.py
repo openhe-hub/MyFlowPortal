@@ -1019,8 +1019,9 @@ class WanFunControlPipeline(DiffusionPipeline):
         # Preprocess cotrolling video:
         assert control_video_tar is not None
         assert control_video_src is not None
+        _share_control = control_video_src is control_video_tar
         video_length = control_video_tar.shape[2]
-        control_video_tar = self.image_processor.preprocess(rearrange(control_video_tar, "b c f h w -> (b f) c h w"), height=height, width=width) 
+        control_video_tar = self.image_processor.preprocess(rearrange(control_video_tar, "b c f h w -> (b f) c h w"), height=height, width=width)
         control_video_tar = control_video_tar.to(dtype=torch.float32)
         control_video_tar = rearrange(control_video_tar, "(b f) c h w -> b c f h w", f=video_length)
         control_video_tar_latents = self.prepare_control_latents(
@@ -1034,20 +1035,23 @@ class WanFunControlPipeline(DiffusionPipeline):
             generator,
             do_classifier_free_guidance
         )[1]
-        control_video_src = self.image_processor.preprocess(rearrange(control_video_src, "b c f h w -> (b f) c h w"), height=height, width=width) 
-        control_video_src = control_video_src.to(dtype=torch.float32)
-        control_video_src = rearrange(control_video_src, "(b f) c h w -> b c f h w", f=video_length)
-        control_video_src_latents = self.prepare_control_latents(
-            None,
-            control_video_src,
-            batch_size,
-            height,
-            width,
-            weight_dtype,
-            device,
-            generator,
-            do_classifier_free_guidance
-        )[1]
+        if _share_control:
+            control_video_src_latents = control_video_tar_latents
+        else:
+            control_video_src = self.image_processor.preprocess(rearrange(control_video_src, "b c f h w -> (b f) c h w"), height=height, width=width)
+            control_video_src = control_video_src.to(dtype=torch.float32)
+            control_video_src = rearrange(control_video_src, "(b f) c h w -> b c f h w", f=video_length)
+            control_video_src_latents = self.prepare_control_latents(
+                None,
+                control_video_src,
+                batch_size,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+                do_classifier_free_guidance
+            )[1]
         control_camera_latents = None
 
         assert ref_image_tar_path is not None

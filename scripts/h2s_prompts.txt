@@ -1,0 +1,11 @@
+SRC|a person is signing in front of a plain background in a studio
+0|a person is signing in a bright modern office with large windows, natural daylight, clean white walls, professional setting
+1|a person is signing in a quiet library with wooden bookshelves, warm ambient lighting, academic atmosphere
+2|a person is signing on a city street with buildings, shops, and pedestrians in the background, daytime urban scene
+3|a person is signing in a green park with trees, grass, and a walking path, sunny day, natural environment
+4|a person is signing in a cozy cafe with warm lighting, wooden tables, coffee cups, and indoor plants
+5|a person is signing in a classroom with a whiteboard, desks, and educational posters on the wall
+6|a person is signing in a modern living room with a sofa, bookshelf, floor lamp, and soft warm lighting
+7|a person is signing at a beach with ocean waves, sandy shore, and blue sky in the background
+8|a person is signing in front of a cityscape at night with neon lights, skyscrapers, and colorful reflections
+9|a person is signing in a beautiful garden with colorful flowers, stone path, and soft sunlight filtering through
