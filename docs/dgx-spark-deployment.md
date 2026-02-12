@@ -13,7 +13,8 @@ FlowPortal has been deployed on the AIR DGX Spark cluster (30 x NVIDIA DGX GB10 
 | GPU | NVIDIA GB10 (Grace Blackwell), compute capability sm_121 |
 | CUDA Driver | 580.95.05 |
 | CUDA Version | 13.0 |
-| CPU | ARM Neoverse (per node) |
+| CPU | 20 cores: 10x Cortex-X925 @ 4.0 GHz + 10x Cortex-A725 @ 2.86 GHz (big.LITTLE) |
+| Memory | 110 GB unified (shared CPU/GPU) |
 | Local Disk | ~3.7 TB NVMe per node (`/home/cvpr/`) |
 | Shared Storage | `/CVPR` — 2 TB SMB/CIFS mount |
 
@@ -400,9 +401,18 @@ ssh dgx-login "for i in 0 1 2 3 4 5 6 7 8 9; do \
 ssh dgx-login "tail -20 /CVPR/zhewen/FlowPortal/logs/h2s_unselected_<jobid>_<chunk>.out"
 ```
 
+### Time Limit and Resubmission
+
+The job has a 96-hour (4-day) time limit. At ~55 videos/hour (10 GPUs), each round processes ~5,280 videos. To complete all 21,529 videos, resubmit 3-4 times:
+
+```bash
+# Simply resubmit — completed videos are auto-skipped
+ssh dgx-login "sbatch /CVPR/zhewen/FlowPortal/run-h2s-batch-dgx.sh"
+```
+
 ### Known Issues
 
-- **SSL certificate errors on compute nodes**: MatAnyone tries to download `resnet50` weights via torch.hub on first run. Fix: set `TORCH_HOME` to a shared path with pre-downloaded weights, and set `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`.
+- **SSL certificate errors on compute nodes**: MatAnyone tries to download `resnet50` weights via torch.hub on first run. Fix: set `TORCH_HOME` to a shared path with pre-downloaded weights (`pretrained_models/torch_hub_cache/`), and set `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`.
 - **rsync exit code 23**: Harmless "failed to set times" warnings on the SMB mount. All data transfers correctly.
 
 ## Troubleshooting
