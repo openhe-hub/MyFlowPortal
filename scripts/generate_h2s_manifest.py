@@ -1,8 +1,12 @@
 """Generate manifest for How2Sign batch processing.
 
 Scans How2Sign train MP4s, uses ffprobe to get frame counts, assigns k_frames
-based on video length, selects 8000 random videos, and splits into 4 chunks
+based on video length, selects 8000 random videos, and splits into chunks
 for SLURM array jobs.
+
+Modes:
+  selected   (default) — pick 8000 videos, split into 4 chunks
+  unselected           — everything *except* those 8000, split into --num_chunks
 """
 import os
 import csv
@@ -10,15 +14,14 @@ import random
 import math
 import subprocess
 import json
-
-random.seed(42)
+import argparse
+from collections import Counter
 
 VIDEO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "datasets", "How2Sign", "how2sign", "sentence_level", "train",
                          "rgb_front", "raw_videos")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 
-NUM_CHUNKS = 4
 NUM_SELECT = 8000
 INPUT_FPS = 24
 TARGET_FPS = 8
@@ -80,57 +83,56 @@ def get_valid_k_frames(n_frames):
     return None  # too short
 
 
-def main():
-    frame_counts = get_frame_counts(VIDEO_DIR)
+def print_distributions(entries):
+    """Print k_frames and prompt_id distributions."""
+    k_dist = Counter(e["k_frames"] for e in entries)
+    for k in sorted(k_dist):
+        print(f"  k_frames={k}: {k_dist[k]} videos")
+    p_dist = Counter(e["prompt_id"] for e in entries)
+    for p in sorted(p_dist):
+        print(f"  prompt_{p}: {p_dist[p]} videos")
 
-    entries = []
-    skipped = 0
 
-    for fname in sorted(frame_counts.keys()):
-        n_frames = frame_counts[fname]
-        k = get_valid_k_frames(n_frames)
-        if k is None:
-            skipped += 1
-            continue
-        video_name = fname.rsplit(".", 1)[0]  # strip .mp4
-        entries.append({
-            "video_name": video_name,
-            "n_frames": n_frames,
-            "k_frames": k,
-        })
+def write_manifest(entries, manifest_path):
+    """Write CSV manifest."""
+    with open(manifest_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["video_name", "n_frames", "k_frames", "prompt_id"])
+        writer.writeheader()
+        writer.writerows(entries)
+    print(f"Written: {manifest_path} ({len(entries)} videos)")
 
-    print(f"Total valid: {len(entries)}, Skipped (too short): {skipped}")
 
-    # Select 8000 random videos
-    random.shuffle(entries)
-    if len(entries) > NUM_SELECT:
-        entries = entries[:NUM_SELECT]
+def write_chunks(entries, num_chunks, prefix):
+    """Split entries into num_chunks CSV files."""
+    chunk_size = math.ceil(len(entries) / num_chunks)
+    for i in range(num_chunks):
+        chunk = entries[i * chunk_size : (i + 1) * chunk_size]
+        chunk_path = os.path.join(OUTPUT_DIR, f"{prefix}_chunk{i}.csv")
+        write_manifest(chunk, chunk_path)
+
+
+def mode_selected(all_valid):
+    """Original mode: select 8000 random videos, split into 4 chunks."""
+    num_chunks = 4
+
+    random.seed(42)
+    random.shuffle(all_valid)
+
+    if len(all_valid) > NUM_SELECT:
+        entries = all_valid[:NUM_SELECT]
         print(f"Selected {NUM_SELECT} videos from valid pool")
     else:
+        entries = all_valid[:]
         print(f"Warning: only {len(entries)} valid videos (requested {NUM_SELECT})")
 
     # Assign random prompt_id
     for e in entries:
         e["prompt_id"] = random.randint(0, len(PROMPTS_TAR) - 1)
 
-    # k_frames distribution
-    from collections import Counter
-    k_dist = Counter(e["k_frames"] for e in entries)
-    for k in sorted(k_dist):
-        print(f"  k_frames={k}: {k_dist[k]} videos")
-
-    # prompt distribution
-    p_dist = Counter(e["prompt_id"] for e in entries)
-    for p in sorted(p_dist):
-        print(f"  prompt_{p}: {p_dist[p]} videos")
+    print_distributions(entries)
 
     # Write full manifest
-    manifest_path = os.path.join(OUTPUT_DIR, "h2s_manifest.csv")
-    with open(manifest_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["video_name", "n_frames", "k_frames", "prompt_id"])
-        writer.writeheader()
-        writer.writerows(entries)
-    print(f"Written: {manifest_path}")
+    write_manifest(entries, os.path.join(OUTPUT_DIR, "h2s_manifest.csv"))
 
     # Write prompts file
     prompts_path = os.path.join(OUTPUT_DIR, "h2s_prompts.txt")
@@ -148,15 +150,76 @@ def main():
     print(f"Written: {selected_path}")
 
     # Split into chunks
-    chunk_size = math.ceil(len(entries) / NUM_CHUNKS)
-    for i in range(NUM_CHUNKS):
-        chunk = entries[i * chunk_size : (i + 1) * chunk_size]
-        chunk_path = os.path.join(OUTPUT_DIR, f"h2s_manifest_chunk{i}.csv")
-        with open(chunk_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["video_name", "n_frames", "k_frames", "prompt_id"])
-            writer.writeheader()
-            writer.writerows(chunk)
-        print(f"Written: {chunk_path} ({len(chunk)} videos)")
+    write_chunks(entries, num_chunks, "h2s_manifest")
+
+
+def mode_unselected(all_valid, num_chunks):
+    """Select everything EXCEPT the 8000 already-selected videos."""
+    # Reproduce the same seed=42 shuffle to identify the selected 8000
+    random.seed(42)
+    shuffled = all_valid[:]
+    random.shuffle(shuffled)
+
+    if len(shuffled) <= NUM_SELECT:
+        print(f"Error: only {len(shuffled)} valid videos, nothing unselected")
+        return
+
+    selected_names = set(e["video_name"] for e in shuffled[:NUM_SELECT])
+    unselected = [e for e in shuffled[NUM_SELECT:]]
+    print(f"Selected (excluded): {len(selected_names)}, Unselected: {len(unselected)}")
+
+    # Assign random prompt_id (fresh RNG after the shuffle consumed seed=42 state)
+    random.seed(42)
+    for e in unselected:
+        e["prompt_id"] = random.randint(0, len(PROMPTS_TAR) - 1)
+
+    print_distributions(unselected)
+
+    # Write full unselected manifest
+    write_manifest(unselected, os.path.join(OUTPUT_DIR, "h2s_unselected_manifest.csv"))
+
+    # Write unselected video filenames (for transfer)
+    videos_path = os.path.join(OUTPUT_DIR, "h2s_unselected_videos.txt")
+    with open(videos_path, "w") as f:
+        for e in unselected:
+            f.write(f"{e['video_name']}.mp4\n")
+    print(f"Written: {videos_path}")
+
+    # Split into chunks
+    write_chunks(unselected, num_chunks, "h2s_unselected")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate H2S manifest")
+    parser.add_argument("--mode", choices=["selected", "unselected"], default="selected",
+                        help="selected = pick 8000; unselected = everything else")
+    parser.add_argument("--num_chunks", type=int, default=10,
+                        help="Number of chunks for unselected mode (default: 10)")
+    args = parser.parse_args()
+
+    frame_counts = get_frame_counts(VIDEO_DIR)
+
+    all_valid = []
+    skipped = 0
+    for fname in sorted(frame_counts.keys()):
+        n_frames = frame_counts[fname]
+        k = get_valid_k_frames(n_frames)
+        if k is None:
+            skipped += 1
+            continue
+        video_name = fname.rsplit(".", 1)[0]
+        all_valid.append({
+            "video_name": video_name,
+            "n_frames": n_frames,
+            "k_frames": k,
+        })
+
+    print(f"Total valid: {len(all_valid)}, Skipped (too short): {skipped}")
+
+    if args.mode == "selected":
+        mode_selected(all_valid)
+    else:
+        mode_unselected(all_valid, args.num_chunks)
 
 
 if __name__ == "__main__":

@@ -325,6 +325,86 @@ Note: The baseline above is after the first round of optimization (from the orig
 - **torch.compile**: "Not enough SMs to use max_autotune_gemm mode" — 92s compilation overhead outweighed gains for single runs
 - **FP8 quantization**: Not tested; GB10 has limited SMs making the tradeoff uncertain
 
+## How2Sign Batch Processing
+
+### Overview
+
+The How2Sign batch pipeline processes sign language videos with background replacement using 10-GPU parallelism on DGX Spark.
+
+- **Total videos**: 31,047 MP4s (31 GB) in `datasets/How2Sign/`
+- **Valid videos**: 29,529 (1,518 too short)
+- **Selected set**: 8,000 videos (seed=42 random selection) — processed on Jubail cluster
+- **Unselected set**: 21,529 videos — processed on DGX Spark (10 chunks)
+
+### Manifest Generation
+
+```bash
+# Generate selected 8000 (original, 4 chunks for Jubail)
+python scripts/generate_h2s_manifest.py --mode selected
+
+# Generate unselected remainder (10 chunks for DGX Spark)
+python scripts/generate_h2s_manifest.py --mode unselected --num_chunks 10
+```
+
+Output files (all regenerable with the same seed):
+- `scripts/h2s_unselected_manifest.csv` — full unselected manifest (21,529 rows)
+- `scripts/h2s_unselected_videos.txt` — filenames for rsync transfer
+- `scripts/h2s_unselected_chunk{0-9}.csv` — 10 chunks (~2,153 each)
+
+### Deployment
+
+```bash
+# 1. Transfer unselected videos to DGX (22.3 GB)
+rsync -avh --inplace --no-perms --no-owner --no-group \
+  --files-from=scripts/h2s_unselected_videos.txt \
+  datasets/How2Sign/how2sign/sentence_level/train/rgb_front/raw_videos/ \
+  dgx-login:/CVPR/zhewen/FlowPortal/datasets/How2Sign/train_mp4/
+
+# 2. Sync scripts and manifests
+rsync -avh --inplace --no-perms --no-owner --no-group \
+  scripts/h2s_unselected_*.csv scripts/h2s_prompts.txt run-h2s-batch-dgx.sh \
+  dgx-login:/CVPR/zhewen/FlowPortal/
+
+# 3. Move manifests to scripts/ on DGX
+ssh dgx-login "mv /CVPR/zhewen/FlowPortal/h2s_unselected_*.csv \
+  /CVPR/zhewen/FlowPortal/h2s_prompts.txt /CVPR/zhewen/FlowPortal/scripts/"
+
+# 4. Submit 10-GPU array job
+ssh dgx-login "sbatch /CVPR/zhewen/FlowPortal/run-h2s-batch-dgx.sh"
+```
+
+### SLURM Script: `run-h2s-batch-dgx.sh`
+
+- `--partition=spark`, `--array=0-9`, `--mem=100G`, `--time=96:00:00`
+- Each array task processes one chunk on a separate node
+- NVMe model caching (same pattern as cat demo)
+- DGX-optimized pipeline (Canny edge, 15-step IC-Light, 20-step FlowPortal with TeaCache)
+- Skips already-completed videos (checks `results/flow-edit-{name}/output_video.mp4`)
+- Cleans up intermediate files after each video
+- Progress logged to `logs/h2s_unselected_progress_{chunk_id}.log`
+
+### Monitoring
+
+```bash
+# Job queue
+ssh dgx-login "squeue -u cvpr --name=FP-h2s-u"
+
+# Per-chunk progress
+ssh dgx-login "for i in 0 1 2 3 4 5 6 7 8 9; do \
+  f=/CVPR/zhewen/FlowPortal/logs/h2s_unselected_progress_\${i}.log; \
+  ok=\$(grep -c ' OK ' \$f 2>/dev/null || echo 0); \
+  fail=\$(grep -c FAILED \$f 2>/dev/null || echo 0); \
+  echo \"Chunk \$i: \${ok} OK, \${fail} FAIL\"; done"
+
+# Live output for a specific chunk
+ssh dgx-login "tail -20 /CVPR/zhewen/FlowPortal/logs/h2s_unselected_<jobid>_<chunk>.out"
+```
+
+### Known Issues
+
+- **SSL certificate errors on compute nodes**: MatAnyone tries to download `resnet50` weights via torch.hub on first run. Fix: set `TORCH_HOME` to a shared path with pre-downloaded weights, and set `SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`.
+- **rsync exit code 23**: Harmless "failed to set times" warnings on the SMB mount. All data transfers correctly.
+
 ## Troubleshooting
 
 ### SMB "Operation not permitted" on chmod/symlink
