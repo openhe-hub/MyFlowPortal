@@ -341,36 +341,33 @@ The How2Sign batch pipeline processes sign language videos with background repla
 
 ```bash
 # Generate selected 8000 (original, 4 chunks for Jubail)
-python scripts/generate_h2s_manifest.py --mode selected
+python scripts/h2s/generate_h2s_manifest.py --mode selected
 
 # Generate unselected remainder (10 chunks for DGX Spark)
-python scripts/generate_h2s_manifest.py --mode unselected --num_chunks 10
+python scripts/h2s/generate_h2s_manifest.py --mode unselected --num_chunks 10
 ```
 
 Output files (all regenerable with the same seed):
-- `scripts/h2s_unselected_manifest.csv` — full unselected manifest (21,529 rows)
-- `scripts/h2s_unselected_videos.txt` — filenames for rsync transfer
-- `scripts/h2s_unselected_chunk{0-9}.csv` — 10 chunks (~2,153 each)
+- `scripts/h2s/h2s_unselected_manifest.csv` — full unselected manifest (21,529 rows)
+- `scripts/h2s/h2s_unselected_videos.txt` — filenames for rsync transfer
+- `scripts/h2s/h2s_unselected_chunk{0-9}.csv` — 10 chunks (~2,153 each)
 
 ### Deployment
 
 ```bash
 # 1. Transfer unselected videos to DGX (22.3 GB)
 rsync -avh --inplace --no-perms --no-owner --no-group \
-  --files-from=scripts/h2s_unselected_videos.txt \
+  --files-from=scripts/h2s/h2s_unselected_videos.txt \
   datasets/How2Sign/how2sign/sentence_level/train/rgb_front/raw_videos/ \
   dgx-login:/CVPR/zhewen/FlowPortal/datasets/How2Sign/train_mp4/
 
-# 2. Sync scripts and manifests
+# 2. Sync scripts, manifests, and batch script
 rsync -avh --inplace --no-perms --no-owner --no-group \
-  scripts/h2s_unselected_*.csv scripts/h2s_prompts.txt run-h2s-batch-dgx.sh \
-  dgx-login:/CVPR/zhewen/FlowPortal/
+  scripts/h2s/ dgx-login:/CVPR/zhewen/FlowPortal/scripts/h2s/
+rsync -avh --inplace --no-perms --no-owner --no-group \
+  run-h2s-batch-dgx.sh dgx-login:/CVPR/zhewen/FlowPortal/
 
-# 3. Move manifests to scripts/ on DGX
-ssh dgx-login "mv /CVPR/zhewen/FlowPortal/h2s_unselected_*.csv \
-  /CVPR/zhewen/FlowPortal/h2s_prompts.txt /CVPR/zhewen/FlowPortal/scripts/"
-
-# 4. Submit 10-GPU array job
+# 3. Submit 10-GPU array job
 ssh dgx-login "sbatch /CVPR/zhewen/FlowPortal/run-h2s-batch-dgx.sh"
 ```
 

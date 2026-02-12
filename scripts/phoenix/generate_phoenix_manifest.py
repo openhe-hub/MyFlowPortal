@@ -14,7 +14,7 @@ TRAIN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
                          "datasets", "PHOENIX-2014-T", "features", "fullFrame-210x260px", "train")
 MP4_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "datasets", "PHOENIX-2014-T", "train_mp4")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 NUM_CHUNKS = 4
 INPUT_FPS = 25

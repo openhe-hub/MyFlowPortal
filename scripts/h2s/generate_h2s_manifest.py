@@ -20,7 +20,7 @@ from collections import Counter
 VIDEO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "datasets", "How2Sign", "how2sign", "sentence_level", "train",
                          "rgb_front", "raw_videos")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 NUM_SELECT = 8000
 INPUT_FPS = 24

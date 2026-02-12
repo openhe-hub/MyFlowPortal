@@ -34,8 +34,8 @@ cd $PROJECT
 mkdir -p logs
 
 CHUNK_ID=$SLURM_ARRAY_TASK_ID
-CHUNK_FILE="${PROJECT}/scripts/h2s_unselected_chunk${CHUNK_ID}.csv"
-PROMPTS_FILE="${PROJECT}/scripts/h2s_prompts.txt"
+CHUNK_FILE="${PROJECT}/scripts/h2s/h2s_unselected_chunk${CHUNK_ID}.csv"
+PROMPTS_FILE="${PROJECT}/scripts/h2s/h2s_prompts.txt"
 PROGRESS_FILE="${PROJECT}/logs/h2s_unselected_progress_${CHUNK_ID}.log"
 
 T() { date +%s; }

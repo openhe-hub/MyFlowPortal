@@ -5,12 +5,9 @@ results/
 logs/
 
 # Generated manifests and video lists (large CSVs, regenerable)
-scripts/h2s_manifest.csv
-scripts/h2s_manifest_chunk*.csv
-scripts/h2s_selected_videos.txt
-scripts/h2s_unselected_manifest.csv
-scripts/h2s_unselected_chunk*.csv
-scripts/h2s_unselected_videos.txt
+scripts/h2s/*.csv
+scripts/h2s/*_videos.txt
+scripts/phoenix/*.csv
 
 # Temporary upload directories
 upload_v3/

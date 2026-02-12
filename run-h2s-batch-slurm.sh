@@ -25,8 +25,8 @@ cd $PROJ_DIR
 mkdir -p logs
 
 CHUNK_ID=$SLURM_ARRAY_TASK_ID
-CHUNK_FILE="${PROJ_DIR}/scripts/h2s_manifest_chunk${CHUNK_ID}.csv"
-PROMPTS_FILE="${PROJ_DIR}/scripts/h2s_prompts.txt"
+CHUNK_FILE="${PROJ_DIR}/scripts/h2s/h2s_manifest_chunk${CHUNK_ID}.csv"
+PROMPTS_FILE="${PROJ_DIR}/scripts/h2s/h2s_prompts.txt"
 PROGRESS_FILE="${PROJ_DIR}/logs/h2s_progress_${CHUNK_ID}.log"
 
 echo "=============================================================================="
